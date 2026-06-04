@@ -16,106 +16,59 @@
 
 package org.lsposed.hiddenapibypass;
 
-import java.io.ByteArrayOutputStream;
-import java.io.File;
-import java.io.FileInputStream;
+import android.os.Build;
+import android.os.SharedMemory;
+
+import androidx.annotation.RequiresApi;
+
 import java.io.IOException;
-import java.io.InputStream;
+import java.lang.invoke.MethodHandle;
+import java.lang.reflect.AccessibleObject;
+import java.lang.reflect.Executable;
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
+import java.nio.channels.FileChannel;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Paths;
+import java.nio.file.StandardOpenOption;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.PriorityQueue;
-import java.util.zip.ZipEntry;
 import java.util.zip.ZipException;
-import java.util.zip.ZipFile;
 
+@RequiresApi(Build.VERSION_CODES.P)
 final class DexFieldLayout {
-    private static final String OBJECT = "Ljava/lang/Object;";
-    private static final String CLASS = "Ljava/lang/Class;";
-    private static final String ACCESSIBLE_OBJECT = "Ljava/lang/reflect/AccessibleObject;";
-    private static final String EXECUTABLE = "Ljava/lang/reflect/Executable;";
-    private static final String METHOD_HANDLE = "Ljava/lang/invoke/MethodHandle;";
+    static final String OBJECT = descriptorString(Object.class);
+    static final String CLASS = descriptorString(Class.class);
+    static final String ACCESSIBLE_OBJECT = descriptorString(AccessibleObject.class);
+    static final String EXECUTABLE = descriptorString(Executable.class);
+    static final String METHOD_HANDLE = descriptorString(MethodHandle.class);
     private static final int OBJECT_HEADER_SIZE = 8;
     private static final int REFERENCE_SIZE = 4;
 
     private final Map<String, DexClass> classes = new HashMap<>();
     private final Map<String, Layout> layouts = new HashMap<>();
 
-    static long[] readOffsetData() throws IOException, ReflectiveOperationException {
-        DexFieldLayout scanner = new DexFieldLayout();
-        String bootClassPath = System.getProperty("java.boot.class.path", "");
-        if (bootClassPath == null) bootClassPath = "";
-        for (String path : bootClassPath.split(":")) {
-            if (scanner.hasAllClasses()) break;
-            scanner.scanPath(path);
-        }
-        if (!scanner.hasAllClasses()) {
-            throw new ClassNotFoundException("Missing boot dex classes for offset calculation");
-        }
-
-        Layout executable = scanner.layoutOf(EXECUTABLE);
-        Layout methodHandle = scanner.layoutOf(METHOD_HANDLE);
-        Layout classClass = scanner.layoutOf(CLASS);
-
-        long[] data = new long[6];
-        data[0] = executable.offsetOf("artMethod");
-        data[1] = executable.offsetOf("declaringClass");
-        data[2] = methodHandle.offsetOf("artFieldOrMethod");
-        data[3] = classClass.offsetOf("methods");
-        if (classClass.hasField("fields")) {
-            data[4] = classClass.offsetOf("fields");
-            data[5] = data[4];
-        } else {
-            data[4] = classClass.offsetOf("iFields");
-            data[5] = classClass.offsetOf("sFields");
-        }
-        return data;
-    }
-
-    private void scanPath(String path) throws IOException {
+    void scanPath(String path) throws IOException {
         if (path.isEmpty()) return;
-        File file = new File(path);
-        if (!file.isFile()) return;
+        var file = Paths.get(path);
+        if (!Files.isRegularFile(file)) return;
 
-        try (ZipFile zipFile = new ZipFile(file)) {
+        try (var channel = FileChannel.open(file, StandardOpenOption.READ)) {
+            long size = channel.size();
+            var mapped = channel.map(FileChannel.MapMode.READ_ONLY, 0, size);
+            mapped.order(ByteOrder.LITTLE_ENDIAN);
+            var zipReader = new ZipReader(mapped);
             for (int i = 1; !hasAllClasses(); ++i) {
-                ZipEntry entry = zipFile.getEntry(i == 1 ? "classes.dex" : "classes" + i + ".dex");
-                if (entry == null) break;
-                try (InputStream is = zipFile.getInputStream(entry)) {
-                    scanDex(readAllBytes(is, entry.getSize()));
-                }
+                var dex = zipReader.getEntry(i == 1 ? "classes.dex" : "classes" + i + ".dex");
+                if (dex == null) break;
+                new DexReader(dex).scan(classes);
             }
-        } catch (ZipException e) {
-            try (InputStream is = new FileInputStream(file)) {
-                scanDex(readAllBytes(is, file.length()));
-            }
+            SharedMemory.unmap(mapped);
         }
-    }
-
-    private static byte[] readAllBytes(InputStream is, long size) throws IOException {
-        ByteArrayOutputStream os = null;
-        if (size >= 0 && size <= Integer.MAX_VALUE) {
-            byte[] bytes = new byte[(int) size];
-            int offset = 0;
-            while (offset < bytes.length) {
-                int read = is.read(bytes, offset, bytes.length - offset);
-                if (read == -1) break;
-                offset += read;
-            }
-            if (offset == bytes.length) return bytes;
-            os = new ByteArrayOutputStream(offset);
-            os.write(bytes, 0, offset);
-        }
-
-        if (os == null) os = new ByteArrayOutputStream();
-        byte[] buffer = new byte[8192];
-        int read;
-        while ((read = is.read(buffer)) != -1) {
-            os.write(buffer, 0, read);
-        }
-        return os.toByteArray();
     }
 
     private boolean hasAllClasses() {
@@ -125,11 +78,18 @@ final class DexFieldLayout {
                 && classes.containsKey(METHOD_HANDLE);
     }
 
-    private void scanDex(byte[] dex) {
-        new DexReader(dex).scan(classes);
+    private static String descriptorString(Class<?> clazz) {
+        return 'L' + clazz.getName().replace('.', '/') + ';';
     }
 
-    private Layout layoutOf(String descriptor) throws ClassNotFoundException {
+    private static ByteBuffer slice(ByteBuffer buffer, int offset, int size) {
+        var duplicate = buffer.duplicate();
+        duplicate.position(offset);
+        duplicate.limit(offset + size);
+        return duplicate.slice().order(buffer.order());
+    }
+
+    Layout layoutOf(String descriptor) throws ClassNotFoundException {
         if (OBJECT.equals(descriptor)) {
             return new Layout(OBJECT_HEADER_SIZE, new HashMap<>());
         }
@@ -282,9 +242,96 @@ final class DexFieldLayout {
         }
     }
 
+    private static final class ZipReader {
+        private static final int EOCD_SIGNATURE = 0x06054b50;
+        private static final int CENTRAL_DIRECTORY_SIGNATURE = 0x02014b50;
+        private static final int LOCAL_FILE_HEADER_SIGNATURE = 0x04034b50;
+        private static final int STORED = 0;
+        private static final int MAX_EOCD_SEARCH = 0xffff + 22;
+
+        private final ByteBuffer fileData;
+        private final int centralDirectoryOffset;
+        private final int entryCount;
+
+        private ZipReader(ByteBuffer fileData) throws ZipException {
+            this.fileData = fileData;
+            int endOfCentralDirectoryOffset = findEndOfCentralDirectory();
+            entryCount = readUnsignedShort(endOfCentralDirectoryOffset + 10);
+            centralDirectoryOffset = readInt(endOfCentralDirectoryOffset + 16);
+        }
+
+        private ByteBuffer getEntry(String name) throws IOException {
+            int offset = centralDirectoryOffset;
+            for (int i = 0; i < entryCount; ++i) {
+                if (readInt(offset) != CENTRAL_DIRECTORY_SIGNATURE) {
+                    throw new ZipException();
+                }
+
+                int compressionMethod = readUnsignedShort(offset + 10);
+                int compressedSize = readInt(offset + 20);
+                int uncompressedSize = readInt(offset + 24);
+                int fileNameLength = readUnsignedShort(offset + 28);
+                int extraLength = readUnsignedShort(offset + 30);
+                int commentLength = readUnsignedShort(offset + 32);
+                int localHeaderOffset = readInt(offset + 42);
+                int fileNameOffset = offset + 46;
+                if (matchesName(fileNameOffset, fileNameLength, name)) {
+                    return openEntry(localHeaderOffset, compressionMethod, compressedSize, uncompressedSize);
+                }
+                offset = fileNameOffset + fileNameLength + extraLength + commentLength;
+            }
+            return null;
+        }
+
+        private ByteBuffer openEntry(int localHeaderOffset, int compressionMethod, int compressedSize,
+                                     int uncompressedSize) throws IOException {
+            if (readInt(localHeaderOffset) != LOCAL_FILE_HEADER_SIGNATURE) {
+                throw new ZipException();
+            }
+            int fileNameLength = readUnsignedShort(localHeaderOffset + 26);
+            int extraLength = readUnsignedShort(localHeaderOffset + 28);
+            int dataOffset = localHeaderOffset + 30 + fileNameLength + extraLength;
+            if (compressionMethod != STORED || compressedSize != uncompressedSize) {
+                throw new ZipException();
+            }
+            return slice(fileData, dataOffset, uncompressedSize);
+        }
+
+        private int findEndOfCentralDirectory() throws ZipException {
+            if (fileData.limit() < 22) {
+                throw new ZipException();
+            }
+            int start = Math.max(0, fileData.limit() - MAX_EOCD_SEARCH);
+            for (int offset = fileData.limit() - 22; offset >= start; --offset) {
+                if (readInt(offset) == EOCD_SIGNATURE) {
+                    return offset;
+                }
+            }
+            throw new ZipException();
+        }
+
+        private boolean matchesName(int offset, int length, String expected) {
+            if (length != expected.length()) return false;
+            for (int i = 0; i < length; ++i) {
+                if ((char) (fileData.get(offset + i) & 0xff) != expected.charAt(i)) {
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        private int readInt(int offset) {
+            return fileData.getInt(offset);
+        }
+
+        private int readUnsignedShort(int offset) {
+            return fileData.getShort(offset) & 0xffff;
+        }
+    }
+
     private static final class DexReader {
         private static final int NO_INDEX = -1;
-        private final byte[] dex;
+        private final ByteBuffer dex;
         private final int stringIdsSize;
         private final int stringIdsOff;
         private final int typeIdsSize;
@@ -294,9 +341,9 @@ final class DexFieldLayout {
         private final int classDefsSize;
         private final int classDefsOff;
 
-        private DexReader(byte[] dex) {
+        private DexReader(ByteBuffer dex) {
             this.dex = dex;
-            if (dex.length < 0x70 || dex[0] != 'd' || dex[1] != 'e' || dex[2] != 'x' || dex[3] != '\n') {
+            if (dex.limit() < 0x70 || readInt(0) != 0x0a786564) {
                 throw new IllegalArgumentException("Not a dex file");
             }
             stringIdsSize = readInt(0x38);
@@ -447,16 +494,16 @@ final class DexFieldLayout {
         }
 
         private int readModifiedUtf8Char(Position position) {
-            int current = dex[position.offset++] & 0xff;
+            int current = dex.get(position.offset++) & 0xff;
             if (current == 0 || (current & 0x80) == 0) {
                 return current;
             }
             if ((current & 0xe0) == 0xc0) {
-                return ((current & 0x1f) << 6) | (dex[position.offset++] & 0x3f);
+                return ((current & 0x1f) << 6) | (dex.get(position.offset++) & 0x3f);
             }
             return ((current & 0x0f) << 12)
-                    | ((dex[position.offset++] & 0x3f) << 6)
-                    | (dex[position.offset++] & 0x3f);
+                    | ((dex.get(position.offset++) & 0x3f) << 6)
+                    | (dex.get(position.offset++) & 0x3f);
         }
 
         private String getString(int stringIndex) {
@@ -466,10 +513,10 @@ final class DexFieldLayout {
             Position position = new Position(readInt(stringIdsOff + stringIndex * 4));
             readUleb128(position);
             int start = position.offset;
-            while (position.offset < dex.length && dex[position.offset] != 0) {
+            while (position.offset < dex.limit() && dex.get(position.offset) != 0) {
                 position.offset++;
             }
-            return new String(dex, start, position.offset - start, StandardCharsets.UTF_8);
+            return StandardCharsets.UTF_8.decode(slice(dex, start, position.offset - start)).toString();
         }
 
         private int readUleb128(Position position) {
@@ -477,7 +524,7 @@ final class DexFieldLayout {
             int shift = 0;
             int current;
             do {
-                current = dex[position.offset++] & 0xff;
+                current = dex.get(position.offset++) & 0xff;
                 result |= (current & 0x7f) << shift;
                 shift += 7;
             } while ((current & 0x80) != 0);
@@ -485,14 +532,11 @@ final class DexFieldLayout {
         }
 
         private int readInt(int offset) {
-            return (dex[offset] & 0xff)
-                    | ((dex[offset + 1] & 0xff) << 8)
-                    | ((dex[offset + 2] & 0xff) << 16)
-                    | ((dex[offset + 3] & 0xff) << 24);
+            return dex.getInt(offset);
         }
 
         private int readUnsignedShort(int offset) {
-            return (dex[offset] & 0xff) | ((dex[offset + 1] & 0xff) << 8);
+            return dex.getShort(offset) & 0xffff;
         }
     }
 
@@ -530,7 +574,7 @@ final class DexFieldLayout {
         }
     }
 
-    private static final class Layout {
+    static final class Layout {
         private final int objectSize;
         private final Map<String, Integer> offsets;
 
@@ -539,11 +583,11 @@ final class DexFieldLayout {
             this.offsets = offsets;
         }
 
-        private boolean hasField(String name) {
+        boolean hasField(String name) {
             return offsets.containsKey(name);
         }
 
-        private int offsetOf(String name) throws NoSuchFieldException {
+        int offsetOf(String name) throws NoSuchFieldException {
             Integer offset = offsets.get(name);
             if (offset == null) throw new NoSuchFieldException(name);
             return offset;

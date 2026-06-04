@@ -88,37 +88,53 @@ public final class HiddenApiBypass {
 
     private static long[] readOffsetDataIO() throws ReflectiveOperationException {
         try {
-            return DexFieldLayout.readOffsetData();
+            return readOffsetDataDex();
         } catch (IOException | ReflectiveOperationException | RuntimeException e) {
             if (BuildConfig.DEBUG) Log.w(TAG, "Failed to read offset data from dex", e);
         }
+        return readOffsetDataClassLoader();
+    }
 
+    private static long[] readOffsetDataDex() throws IOException, ReflectiveOperationException {
+        var scanner = new DexFieldLayout();
+        scanner.scanPath(CoreOjClassLoader.getCoreOjPath());
+        var executable = scanner.layoutOf(DexFieldLayout.EXECUTABLE);
+        var methodHandle = scanner.layoutOf(DexFieldLayout.METHOD_HANDLE);
+        var classClass = scanner.layoutOf(DexFieldLayout.CLASS);
+
+        var data = new long[6];
+        data[0] = executable.offsetOf("artMethod");
+        data[1] = executable.offsetOf("declaringClass");
+        data[2] = methodHandle.offsetOf("artFieldOrMethod");
+        data[3] = classClass.offsetOf("methods");
+        if (classClass.hasField("fields")) {
+            data[4] = classClass.offsetOf("fields");
+            data[5] = data[4];
+        } else {
+            data[4] = classClass.offsetOf("iFields");
+            data[5] = classClass.offsetOf("sFields");
+        }
+        return data;
+    }
+
+    private static long[] readOffsetDataClassLoader() throws ReflectiveOperationException {
         ClassLoader bootClassloader = new CoreOjClassLoader();
         Class<?> executableClass = bootClassloader.loadClass(Executable.class.getName());
         Class<?> methodHandleClass = bootClassloader.loadClass(MethodHandle.class.getName());
         Class<?> classClass = bootClassloader.loadClass(Class.class.getName());
-        var methodOffset = unsafe.objectFieldOffset(executableClass.getDeclaredField("artMethod"));
-        var classOffset = unsafe.objectFieldOffset(executableClass.getDeclaredField("declaringClass"));
-        var artOffset = unsafe.objectFieldOffset(methodHandleClass.getDeclaredField("artFieldOrMethod"));
-        var methodsOffset = unsafe.objectFieldOffset(classClass.getDeclaredField("methods"));
 
-        long iFieldOffset;
-        long sFieldOffset;
+        var data = new long[6];
+        data[0] = unsafe.objectFieldOffset(executableClass.getDeclaredField("artMethod"));
+        data[1] = unsafe.objectFieldOffset(executableClass.getDeclaredField("declaringClass"));
+        data[2] = unsafe.objectFieldOffset(methodHandleClass.getDeclaredField("artFieldOrMethod"));
+        data[3] = unsafe.objectFieldOffset(classClass.getDeclaredField("methods"));
         try {
-            iFieldOffset = unsafe.objectFieldOffset(classClass.getDeclaredField("fields"));
-            sFieldOffset = iFieldOffset;
+            data[4] = unsafe.objectFieldOffset(classClass.getDeclaredField("fields"));
+            data[5] = data[4];
         } catch (NoSuchFieldException e) {
-            iFieldOffset = unsafe.objectFieldOffset(classClass.getDeclaredField("iFields"));
-            sFieldOffset = unsafe.objectFieldOffset(classClass.getDeclaredField("sFields"));
+            data[4] = unsafe.objectFieldOffset(classClass.getDeclaredField("iFields"));
+            data[5] = unsafe.objectFieldOffset(classClass.getDeclaredField("sFields"));
         }
-
-        long[] data = new long[6];
-        data[0] = methodOffset;
-        data[1] = classOffset;
-        data[2] = artOffset;
-        data[3] = methodsOffset;
-        data[4] = iFieldOffset;
-        data[5] = sFieldOffset;
         return data;
     }
 

@@ -11,7 +11,7 @@ import dalvik.system.PathClassLoader;
 
 @RequiresApi(Build.VERSION_CODES.P)
 final class CoreOjClassLoader extends PathClassLoader {
-    private static String getCoreOjPath() {
+    static String getCoreOjPath() {
         String bootClassPath = System.getProperty("java.boot.class.path", "");
         assert bootClassPath != null;
         return bootClassPath.split(":", 2)[0];
