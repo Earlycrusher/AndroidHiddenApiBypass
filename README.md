@@ -1,7 +1,7 @@
 # Android Hidden Api Bypass
 
 [![Android CI status](https://github.com/LSPosed/AndroidHiddenApiBypass/actions/workflows/android.yml/badge.svg?branch=main)](https://github.com/LSPosed/AndroidHiddenApiBypass/actions/workflows/android.yml)
-![](https://img.shields.io/badge/Android-1.0%20--%2016-blue.svg)
+![](https://img.shields.io/badge/Android-1.0%20--%2017-blue.svg)
 ![](https://img.shields.io/maven-central/v/org.lsposed.hiddenapibypass/hiddenapibypass.svg)
 
 Bypass restrictions on non-SDK interfaces.

@@ -5,6 +5,7 @@ import com.android.build.api.instrumentation.ClassData
 import com.android.build.api.instrumentation.InstrumentationParameters
 import com.android.build.api.instrumentation.InstrumentationScope
 import org.objectweb.asm.ClassVisitor
+import org.objectweb.asm.Opcodes.ASM9
 import org.objectweb.asm.commons.ClassRemapper
 import org.objectweb.asm.commons.Remapper
 
@@ -17,8 +18,9 @@ plugins {
 }
 
 android {
-    compileSdk = 36
-    buildToolsVersion = "36.1.0"
+    enableKotlin = false
+    compileSdk = 37
+    buildToolsVersion = "37.0.0"
     namespace = "org.lsposed.hiddenapibypass.library"
 
     buildFeatures {
@@ -32,7 +34,7 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
     testOptions {
-        targetSdk = 36
+        targetSdk = 37
     }
     buildTypes {
         release {
@@ -62,7 +64,6 @@ dependencies {
     compileOnly(libs.androidx.annotation)
     androidTestImplementation(libs.test.ext.junit)
     androidTestImplementation(libs.test.rules)
-    androidTestCompileOnly(projects.stub)
 }
 
 abstract class ClassVisitorFactory : AsmClassVisitorFactory<InstrumentationParameters.None> {
@@ -70,7 +71,7 @@ abstract class ClassVisitorFactory : AsmClassVisitorFactory<InstrumentationParam
         classContext: ClassContext,
         nextClassVisitor: ClassVisitor
     ): ClassVisitor {
-        return ClassRemapper(nextClassVisitor, object : Remapper() {
+        return ClassRemapper(nextClassVisitor, object : Remapper(ASM9) {
             override fun map(name: String): String {
                 if (name.startsWith("stub/")) {
                     return name.substring(name.indexOf('/') + 1)
@@ -98,7 +99,7 @@ abstract class ManifestUpdater : DefaultTask() {
     fun taskAction() {
         outputManifest.get().asFile.writeText(
             mergedManifest.get().asFile.readText()
-                .replace("<uses-sdk ", "<uses-sdk android:targetSdkVersion=\"36\" ")
+                .replace("<uses-sdk ", "<uses-sdk android:targetSdkVersion=\"37\" ")
         )
     }
 }
