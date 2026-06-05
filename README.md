@@ -89,7 +89,7 @@ Replace `HiddenApiBypass` with `LSPass` if you do not want to use `Unsafe`.
     ```
     if you are going to add all classes to exemption list, just leave an empty prefix:
     ```java
-    HiddenApiBypass.addHiddenApiExemptions("");
+    HiddenApiBypass.setHiddenApiExemptions("");
     ```
 ## License
 

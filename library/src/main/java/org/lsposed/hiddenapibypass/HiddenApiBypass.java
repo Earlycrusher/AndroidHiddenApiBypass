@@ -403,7 +403,7 @@ public final class HiddenApiBypass {
      *
      * @param signaturePrefixes A list of class signature prefixes. Each item in the list is a prefix match on the type
      *                          signature of a blacklisted API. All matching APIs are treated as if they were on
-     *                          the whitelist: access permitted, and no logging..
+     *                          the whitelist: access permitted, and no logging.
      * @return whether the operation is successful
      */
     public static boolean setHiddenApiExemptions(@NonNull String... signaturePrefixes) {
@@ -422,9 +422,13 @@ public final class HiddenApiBypass {
      *
      * @param signaturePrefixes A list of class signature prefixes. Each item in the list is a prefix match on the type
      *                          signature of a blacklisted API. All matching APIs are treated as if they were on
-     *                          the whitelist: access permitted, and no logging..
+     *                          the whitelist: access permitted, and no logging.
      * @return whether the operation is successful
+     *
+     * @deprecated {@link VMRuntime#setHiddenApiExemptions(String[])} cannot be called more than once.
+     * In a future Android release that will either be no-op or throw an exception.
      */
+    @Deprecated
     public static boolean addHiddenApiExemptions(String... signaturePrefixes) {
         Helper.signaturePrefixes.addAll(Arrays.asList(signaturePrefixes));
         String[] strings = new String[Helper.signaturePrefixes.size()];
@@ -438,7 +442,11 @@ public final class HiddenApiBypass {
      * running this method will not restore the restriction on it.
      *
      * @return whether the operation is successful
+     *
+     * @deprecated {@link VMRuntime#setHiddenApiExemptions(String[])} cannot be called more than once.
+     * In a future Android release that will either be no-op or throw an exception.
      */
+    @Deprecated
     public static boolean clearHiddenApiExemptions() {
         Helper.signaturePrefixes.clear();
         return setHiddenApiExemptions();
